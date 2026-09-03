@@ -5,10 +5,37 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const pino = require("pino");
+const fs = require("fs");
+const path = require("path");
+
+// Plugins Store
+const plugins = new Map();
+
+// Load Plugins dynamically
+function loadPlugins() {
+  const pluginsDir = path.join(__dirname, "plugins");
+  if (!fs.existsSync(pluginsDir)) fs.mkdirSync(pluginsDir);
+
+  const files = fs.readdirSync(pluginsDir);
+  for (const file of files) {
+    if (file.endsWith(".js")) {
+      try {
+        const plugin = require(path.join(pluginsDir, file));
+        if (plugin.cmd) {
+          plugins.set(plugin.cmd, plugin);
+          console.log(`🔌 Loaded Plugin: ${plugin.cmd}`);
+        }
+      } catch (err) {
+        console.error(`❌ Error loading ${file}:`, err);
+      }
+    }
+  }
+}
 
 async function startBot() {
-  const { state, saveCreds } =
-    await useMultiFileAuthState("./session");
+  loadPlugins();
+
+  const { state, saveCreds } = await useMultiFileAuthState("./session");
 
   const sock = makeWASocket({
     auth: state,
@@ -18,20 +45,18 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  // Pairing Code
+  // Pairing Code System
   if (!state.creds.registered) {
-    const phoneNumber = process.env.PHONE_NUMBER;
+    const phoneNumber = process.env.PHONE_NUMBER || "947XXXXXXXX";
 
-    if (!phoneNumber) {
-      console.log("❌ PHONE_NUMBER variable එක add කරන්න.");
+    if (!phoneNumber || phoneNumber === "947XXXXXXXX") {
+      console.log("❌ PHONE_NUMBER variable එක ලබා දෙන්න.");
       return;
     }
 
     setTimeout(async () => {
       try {
-        const code =
-          await sock.requestPairingCode(phoneNumber);
-
+        const code = await sock.requestPairingCode(phoneNumber.replace(/[^0-9]/g, ''));
         console.log("================================");
         console.log("📱 PAIRING CODE:", code);
         console.log("================================");
@@ -41,159 +66,52 @@ async function startBot() {
     }, 3000);
   }
 
-  // Messages
+  // Handle Messages via Plugins
   sock.ev.on("messages.upsert", async ({ messages }) => {
     const msg = messages[0];
-
     if (!msg.message || msg.key.fromMe) return;
 
     const from = msg.key.remoteJid;
+    const body = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+    const args = body.trim().split(/ +/);
+    const command = args.shift().toLowerCase();
+    const query = args.join(" ");
 
-    const text =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      "";
-
-    const command = text.trim().toLowerCase();
-
-    // MAIN MENU
-    if (command === "menu" || command === ".menu") {
-      await sock.sendMessage(from, {
-        text:
-`╭━━━〔 🤖 HASINDU MD BOT 〕━━━╮
-
-      👋 WELCOME!
-
-╭──────────────╮
-│ 📥 DOWNLOAD  │
-│ 🎵 SONG      │
-│ ℹ️ HELP       │
-│ 👤 ABOUT      │
-╰──────────────╯
-
-Type one of these:
-
-📥 download
-🎵 song
-ℹ️ help
-👤 about
-
-╰━━━━━━━━━━━━━━━━━━╯`
-      });
+    // Check if command matches any Plugin
+    if (plugins.has(command)) {
+      const plugin = plugins.get(command);
+      try {
+        await plugin.exec({ sock, msg, from, args, query, body });
+      } catch (err) {
+        console.error(`Error executing ${command}:`, err);
+        await sock.sendMessage(from, { text: "❌ Command එක Process කිරීමේදී දෝෂයක් සිදු විය." }, { quoted: msg });
+      }
       return;
     }
 
-    // DOWNLOAD MENU
-    if (command === "download" || command === ".download") {
-      await sock.sendMessage(from, {
-        text:
-`📥 *DOWNLOAD MENU*
-
-Send a link that you are authorized to download.
-
-Supported categories:
-
-▶️ YouTube
-📘 Facebook
-
-Example:
-download <link>
-
-⚠️ Only download content you have permission to use.`
-      });
+    // Interactive Number Menu Input (1, 2, 3, 4, 5)
+    if (["1", "2", "3", "4", "5"].includes(command)) {
+      if (command === "1") plugins.get(".song")?.exec({ sock, msg, from, args: [], query: "", body: "" });
+      if (command === "2") plugins.get(".yt")?.exec({ sock, msg, from, args: [], query: "", body: "" });
+      if (command === "3") plugins.get(".download")?.exec({ sock, msg, from, args: [], query: "", body: "" });
+      if (command === "4") plugins.get(".ping")?.exec({ sock, msg, from, args: [], query: "", body: "" });
+      if (command === "5") plugins.get(".alive")?.exec({ sock, msg, from, args: [], query: "", body: "" });
       return;
-    }
-
-    // SONG MENU
-    if (command === "song" || command === ".song") {
-      await sock.sendMessage(from, {
-        text:
-`🎵 *SONG MENU*
-
-Send the song/audio link.
-
-Example:
-song <link>
-
-⚠️ Please use music you have permission to download/use.`
-      });
-      return;
-    }
-
-    // HELP
-    if (command === "help" || command === ".help") {
-      await sock.sendMessage(from, {
-        text:
-`ℹ️ *HASINDU MD BOT - HELP*
-
-/menu
-Main menu
-
-/download
-Video download menu
-
-/song
-Audio menu
-
-/help
-Help information
-
-/about
-Bot information`
-      });
-      return;
-    }
-
-    // ABOUT
-    if (command === "about" || command === ".about") {
-      await sock.sendMessage(from, {
-        text:
-`🤖 *HASINDU MD BOT*
-
-WhatsApp automation bot
-Powered by Baileys.
-
-⚡ Fast
-🔄 Auto reconnect
-📱 Pairing Code
-🎵 Audio menu
-📥 Download menu`
-      });
-      return;
-    }
-
-    // Unknown command
-    if (command.startsWith(".")) {
-      await sock.sendMessage(from, {
-        text: "❓ Unknown command.\n\nType *.menu* to see the menu."
-      });
     }
   });
 
-  // Connection
-  sock.ev.on(
-    "connection.update",
-    ({ connection, lastDisconnect }) => {
-
-      if (connection === "open") {
-        console.log("================================");
-        console.log("✅ HASINDU MD BOT CONNECTED!");
-        console.log("================================");
-      }
-
-      if (connection === "close") {
-        const shouldReconnect =
-          lastDisconnect?.error?.output?.statusCode !==
-          DisconnectReason.loggedOut;
-
-        console.log("❌ Connection closed.");
-
-        if (shouldReconnect) {
-          startBot();
-        }
-      }
+  // Connection Updates
+  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
+    if (connection === "open") {
+      console.log("================================");
+      console.log("✅ HASINDU MD BOT CONNECTED!");
+      console.log("================================");
     }
-  );
+    if (connection === "close") {
+      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      if (shouldReconnect) startBot();
+    }
+  });
 }
 
 startBot();
