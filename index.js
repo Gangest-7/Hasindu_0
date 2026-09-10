@@ -7,14 +7,24 @@ const {
 const pino = require("pino");
 const fs = require("fs");
 const path = require("path");
-const config = require("./config"); // config.js import කිරීම
+const express = require("express");
+const config = require("./config");
+
+const app = express();
+const port = process.env.PORT || 8080;
+
+// Web Server for Keep-Alive
+app.get("/", (req, res) => res.send("Hasindu MD is Running!"));
+app.listen(port, () => console.log(`🌐 Server running on port ${port}`));
 
 const plugins = new Map();
-
 let sock = null;
 let starting = false;
 
-// Session ID එක local folder එකට inject කරන කොටස
+// Process Errors handled to prevent instant crashes
+process.on("uncaughtException", console.error);
+process.on("unhandledRejection", console.error);
+
 function restoreSession() {
   const sessionDir = path.join(__dirname, "session");
 
@@ -26,7 +36,14 @@ function restoreSession() {
 
   if (sessId && !fs.existsSync(path.join(sessionDir, "creds.json"))) {
     try {
-      const cleanedSession = sessId.includes(";") ? sessId.split(";")[1] : sessId;
+      let cleanedSession = sessId;
+      if (cleanedSession.includes("PRABATH-MD~")) {
+        cleanedSession = cleanedSession.replace("PRABATH-MD~", "");
+      }
+      if (cleanedSession.includes(";")) {
+        cleanedSession = cleanedSession.split(";")[1];
+      }
+
       const jsonString = Buffer.from(cleanedSession, "base64").toString("utf-8");
 
       fs.writeFileSync(
@@ -48,7 +65,6 @@ function loadPlugins() {
   }
 
   plugins.clear();
-
   const files = fs.readdirSync(pluginsDir);
 
   for (const file of files) {
@@ -56,7 +72,6 @@ function loadPlugins() {
 
     try {
       const plugin = require(path.join(pluginsDir, file));
-
       if (plugin.cmd) {
         plugins.set(plugin.cmd, plugin);
         console.log(`🔌 Loaded Plugin: ${plugin.cmd}`);
@@ -69,7 +84,6 @@ function loadPlugins() {
 
 async function startBot() {
   if (starting) return sock;
-
   starting = true;
 
   try {
@@ -88,12 +102,9 @@ async function startBot() {
 
     sock.ev.on("messages.upsert", async ({ messages }) => {
       const msg = messages[0];
-
       if (!msg?.message || msg.key.fromMe) return;
 
       const from = msg.key.remoteJid;
-
-      // Text සහ Single Select Dropdown Response කියවාගන්නා කොටස
       let body = "";
 
       if (msg.message.conversation) {
@@ -121,19 +132,10 @@ async function startBot() {
 
       if (plugins.has(command)) {
         const plugin = plugins.get(command);
-
         try {
-          await plugin.exec({
-            sock,
-            msg,
-            from,
-            args,
-            query,
-            body
-          });
+          await plugin.exec({ sock, msg, from, args, query, body });
         } catch (err) {
           console.error(`❌ Error executing ${command}:`, err);
-
           try {
             await sock.sendMessage(
               from,
@@ -142,7 +144,6 @@ async function startBot() {
             );
           } catch {}
         }
-
         return;
       }
 
@@ -156,17 +157,9 @@ async function startBot() {
         };
 
         const plugin = plugins.get(commandMap[command]);
-
         if (plugin) {
           try {
-            await plugin.exec({
-              sock,
-              msg,
-              from,
-              args: [],
-              query: "",
-              body: ""
-            });
+            await plugin.exec({ sock, msg, from, args: [], query: "", body: "" });
           } catch (err) {
             console.error(`❌ Error executing ${commandMap[command]}:`, err);
           }
@@ -191,7 +184,6 @@ async function startBot() {
         if (shouldReconnect) {
           console.log("🔄 Reconnecting...");
           starting = false;
-
           setTimeout(() => {
             startBot().catch(console.error);
           }, 3000);
@@ -209,16 +201,11 @@ async function startBot() {
     starting = false;
     sock = null;
     console.error("❌ Bot start error:", err);
-    throw err;
   }
 }
 
-function getSocket() {
-  return sock;
-}
+// Bot එක auto start කිරීම
+startBot();
 
-module.exports = {
-  startBot,
-  getSocket
-};
+module.exports = { startBot, getSocket: () => sock };
   
