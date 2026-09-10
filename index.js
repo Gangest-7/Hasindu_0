@@ -1,7 +1,8 @@
 const {
   default: makeWASocket,
   useMultiFileAuthState,
-  DisconnectReason
+  DisconnectReason,
+  Browsers
 } = require("@whiskeysockets/baileys");
 
 const pino = require("pino");
@@ -10,21 +11,22 @@ const path = require("path");
 const express = require("express");
 const config = require("./config");
 
+// Express Keep-Alive Web Server
 const app = express();
 const port = process.env.PORT || 8080;
 
-// Web Server for Keep-Alive
-app.get("/", (req, res) => res.send("Hasindu MD is Running!"));
-app.listen(port, () => console.log(`🌐 Server running on port ${port}`));
+app.get("/", (req, res) => res.send(" Hasindu MD Active & Running!"));
+app.listen(port, () => console.log(`🌐 Web Server running on port ${port}`));
 
 const plugins = new Map();
 let sock = null;
 let starting = false;
 
-// Process Errors handled to prevent instant crashes
+// Global Crash Handlers (Prevents Server Sudden Shutdowns)
 process.on("uncaughtException", console.error);
 process.on("unhandledRejection", console.error);
 
+// Clean Base64 Session Restoration Logic
 function restoreSession() {
   const sessionDir = path.join(__dirname, "session");
 
@@ -32,24 +34,22 @@ function restoreSession() {
     fs.mkdirSync(sessionDir, { recursive: true });
   }
 
-  const sessId = config.SESSION_ID || process.env.SESSION_ID;
+  let sessId = config.SESSION_ID || process.env.SESSION_ID || "";
+  sessId = sessId.trim();
 
   if (sessId && !fs.existsSync(path.join(sessionDir, "creds.json"))) {
     try {
-      let cleanedSession = sessId;
-      if (cleanedSession.includes("PRABATH-MD~")) {
-        cleanedSession = cleanedSession.replace("PRABATH-MD~", "");
+      if (sessId.includes("PRABATH-MD~")) {
+        sessId = sessId.replace("PRABATH-MD~", "");
       }
-      if (cleanedSession.includes(";")) {
-        cleanedSession = cleanedSession.split(";")[1];
+      if (sessId.includes(";")) {
+        sessId = sessId.split(";")[1];
       }
 
-      const jsonString = Buffer.from(cleanedSession, "base64").toString("utf-8");
+      const decoded = Buffer.from(sessId, "base64").toString("utf-8");
+      JSON.parse(decoded); // Validate JSON Format
 
-      fs.writeFileSync(
-        path.join(sessionDir, "creds.json"),
-        jsonString
-      );
+      fs.writeFileSync(path.join(sessionDir, "creds.json"), decoded);
       console.log("✅ SESSION ID inject විය!");
     } catch (e) {
       console.error("❌ Session ID restoration error:", e.message);
@@ -57,6 +57,7 @@ function restoreSession() {
   }
 }
 
+// Plugin Loader (Dynamically loads commands from /plugins)
 function loadPlugins() {
   const pluginsDir = path.join(__dirname, "plugins");
 
@@ -92,67 +93,100 @@ async function startBot() {
 
     const { state, saveCreds } = await useMultiFileAuthState("./session");
 
+    // Socket Configuration with Updated User-Agent to Avoid Connection Reset
     sock = makeWASocket({
       auth: state,
       logger: pino({ level: "silent" }),
-      printQRInTerminal: false
+      printQRInTerminal: false,
+      browser: Browsers.ubuntu("Chrome")
     });
 
     sock.ev.on("creds.update", saveCreds);
 
+    // Message Upsert Handler
     sock.ev.on("messages.upsert", async ({ messages }) => {
       const msg = messages[0];
       if (!msg?.message || msg.key.fromMe) return;
 
       const from = msg.key.remoteJid;
-      let body = "";
 
-      if (msg.message.conversation) {
-        body = msg.message.conversation;
-      } else if (msg.message.extendedTextMessage?.text) {
-        body = msg.message.extendedTextMessage.text;
-      } else if (msg.message.buttonsResponseMessage?.selectedButtonId) {
-        body = msg.message.buttonsResponseMessage.selectedButtonId;
-      } else if (msg.message.listResponseMessage?.singleSelectReply?.selectedRowId) {
-        body = msg.message.listResponseMessage.singleSelectReply.selectedRowId;
-      } else if (msg.message.interactiveResponseMessage) {
-        try {
-          const params = JSON.parse(
-            msg.message.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson
-          );
-          body = params.id || "";
-        } catch (e) {
-          body = "";
-        }
-      }
+      // Safe Plain Text Extraction
+      const body = (
+        msg.message.conversation ||
+        msg.message.extendedTextMessage?.text ||
+        ""
+      ).trim();
 
-      const args = body.trim().split(/ +/);
+      if (!body) return;
+
+      const args = body.split(/ +/);
       const command = args.shift()?.toLowerCase();
       const query = args.join(" ");
 
+      // Built-in .alive Command Handling
+      if (command === ".alive" || command === "alive") {
+        const senderName = msg.pushName || "WhatsApp User";
+        const senderJid = msg.key.participant || msg.key.remoteJid;
+
+        const aliveMsg = 
+          `╭───────────━━━━━━───────────╮\n` +
+          `│   🤖  *HASINDU-MD IS ALIVE*  🤖\n` +
+          `├───────────━━━━━━───────────┤\n` +
+          `│\n` +
+          `│ 👤 *User:* @${senderJid.split("@")[0]}\n` +
+          `│ ⚡ *Status:* Active & Online\n` +
+          `│ ⚙️ *Platform:* Katabump Hosting\n` +
+          `│ 📌 *Version:* 1.0.0 Stable Engine\n` +
+          `│\n` +
+          `│ 🛠️ *Supported Downloaders:*\n` +
+          `│  ├ YouTube Audio/Video (.song / .yt)\n` +
+          `│  ├ Facebook Video (.fb)\n` +
+          `│  └ Pinterest Media (.pinterest)\n` +
+          `│\n` +
+          `╰───────────━━━━━━───────────╯\n` +
+          `> _Type .menu or .help for all commands._`;
+
+        const aliveImg = config.ALIVE_IMG || "https://i.ibb.co/6R2M3s8/image.jpg";
+
+        try {
+          await sock.sendMessage(
+            from,
+            { image: { url: aliveImg }, caption: aliveMsg, mentions: [senderJid] },
+            { quoted: msg }
+          );
+        } catch {
+          await sock.sendMessage(
+            from,
+            { text: aliveMsg, mentions: [senderJid] },
+            { quoted: msg }
+          );
+        }
+        return;
+      }
+
+      // Execute External Plugins (.song, .fb, .pinterest, .menu, etc.)
       if (plugins.has(command)) {
         const plugin = plugins.get(command);
         try {
           await plugin.exec({ sock, msg, from, args, query, body });
         } catch (err) {
           console.error(`❌ Error executing ${command}:`, err);
-          try {
-            await sock.sendMessage(
-              from,
-              { text: "❌ Command එක Process කිරීමේදී දෝෂයක් සිදු විය." },
-              { quoted: msg }
-            );
-          } catch {}
+          await sock.sendMessage(
+            from,
+            { text: "❌ *Command එක Process කිරීමේදී දෝෂයක් සිදු විය.*" },
+            { quoted: msg }
+          );
         }
         return;
       }
 
+      // Universal Number Reply Shortcut Logic (Replies with 1, 2, 3...)
       if (["1", "2", "3", "4", "5"].includes(command)) {
         const commandMap = {
           "1": ".song",
           "2": ".yt",
-          "3": ".download",
-          "4": ".ping",
+          "3": ".fb",
+          "4": ".pinterest",
           "5": ".alive"
         };
 
@@ -161,12 +195,13 @@ async function startBot() {
           try {
             await plugin.exec({ sock, msg, from, args: [], query: "", body: "" });
           } catch (err) {
-            console.error(`❌ Error executing ${commandMap[command]}:`, err);
+            console.error(`❌ Error executing shortcut ${command}:`, err);
           }
         }
       }
     });
 
+    // Connection Updates & Auto-Reconnect Engine
     sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
       if (connection === "open") {
         console.log("================================");
@@ -204,8 +239,8 @@ async function startBot() {
   }
 }
 
-// Bot එක auto start කිරීම
+// Start Bot Engine
 startBot();
 
 module.exports = { startBot, getSocket: () => sock };
-  
+      
